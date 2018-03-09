@@ -1,8 +1,10 @@
 
 from __future__ import print_function
+from builtins import range
+
 from ctypes import cdll, cast, sizeof
 from ctypes import Structure, POINTER, pointer, create_string_buffer
-from ctypes import c_uint, c_uint64, c_char_p, c_int, c_void_p, c_double
+from ctypes import c_uint, c_uint64, c_char_p, c_int, c_void_p, c_double, c_size_t
 import os
 import sys
 
@@ -20,7 +22,12 @@ def get_lib_fullpath():
     else:
         ext = get_config_var('SO')
 
-    return os.path.join(basedir, '_libsdm'+ext)
+    fullpath = os.path.join(basedir, '_libsdm'+ext)
+    if not os.path.isfile(fullpath):
+        fullpath = os.path.join(basedir, '_libsdm.so')
+
+    return fullpath
+
 
 bitstring_t = c_uint64
 counter_t = c_int
@@ -41,7 +48,49 @@ if libsdm is not None:
 opencl_source_code = os.path.join(basedir, 'scanner_opencl.cl').encode()
 opencl2_source_code = os.path.join(basedir, 'scanner_opencl2.cl').encode()
 if not os.path.exists(opencl_source_code):
-    print('Ops!', opencl_source_code)
+    raise Exception('scanner_opencl.cl not found')
+if not os.path.exists(opencl2_source_code):
+    raise Exception('scanner_opencl2.cl not found')
+
+
+def _multK(value, K):
+    x = value // K
+    if value % K != 0:
+        x += 1
+    x *= K
+    return x
+
+def opencl_worksize_mult16(address_space):
+    local_worksize = _multK(address_space.bs_len, 16)
+    mcu = address_space.opencl_opts.max_compute_units
+    global_worksize = _multK(address_space.sample // 20, 2*mcu*local_worksize)
+    return local_worksize, global_worksize
+
+def opencl_worksize_power2(address_space):
+    local_worksize = 1
+    while local_worksize < address_space.bs_len:
+        local_worksize *= 2
+    mcu = address_space.opencl_opts.max_compute_units
+    global_worksize = _multK(address_space.sample // 20, 2*mcu*local_worksize)
+    return local_worksize, global_worksize
+
+def opencl_worksize_sample(address_space):
+    local_worksize = 0
+    global_worksize = address_space.sample
+    return local_worksize, global_worksize
+
+OPENCL_KERNEL_WORKSIZE = {
+    'single_scan0': opencl_worksize_sample,
+    'single_scan1': opencl_worksize_mult16,
+    'single_scan2': opencl_worksize_mult16,
+    'single_scan3': opencl_worksize_power2,
+    'single_scan4': opencl_worksize_mult16,
+    'single_scan5': opencl_worksize_power2,
+    'single_scan5_unroll': opencl_worksize_power2,
+    'single_scan6': opencl_worksize_mult16,
+}
+OPENCL_KERNEL_NAMES = OPENCL_KERNEL_WORKSIZE.keys()
+
 
 class AddressSpace(Structure):
     ''' The AddressSpace contains the hard-locations' addresses. Thus, it is required to
@@ -50,34 +99,86 @@ class AddressSpace(Structure):
 
     In his book, Kanerva usually uses a 1000-bit address space with 1,000,000 hard-locations (`bits=1000` and `sample=1000000`).
     '''
+    class OpenCLOptions(Structure):
+        _fields_ = [
+            ('kernel_name', c_char_p),
+            ('global_worksize', c_size_t),
+            ('local_worksize', c_size_t),
+            ('max_compute_units', c_uint),
+            ('verbose', c_uint),
+        ]
+
     _fields_ = [
         ('bits', c_uint),
         ('sample', c_uint),
-        ('opencl_opts', POINTER(c_void_p)),
+        ('c_opencl_opts', POINTER(OpenCLOptions)),
+        ('verbose', c_uint),
         ('addresses', POINTER(POINTER(bitstring_t))),
         ('bs_len', c_uint),
         ('bs_bits_remaining', c_uint),
         ('bs_data', POINTER(bitstring_t)),
     ]
 
+    def __del__(self):
+        libsdm.as_free(pointer(self))
+
+    def __init__(self, *args, **kwargs):
+        super(AddressSpace, self).__init__()
+        if kwargs.get('bits', None) != 0:
+            raise Exception('You must use one initializer.')
+
     @classmethod
     def init_random(cls, bits, sample):
         ''' Initialize an address space with hard-locations randomly chosen from {0, 1}^`bits` space.
         '''
-        self = cls()
-        libsdm.as_init_random(pointer(self), c_uint(bits), c_uint(sample))
+        self = cls(bits=0)
+        ret = libsdm.as_init_random(pointer(self), c_uint(bits), c_uint(sample))
+        if ret != 0:
+            raise Exception('Unable to create AddressSpace. Error code: {}'.format(ret))
         return self
 
     @classmethod
     def init_from_b64_file(cls, filename):
         ''' Load an address space from a file.
         '''
-        self = cls()
-        libsdm.as_init_from_b64_file(pointer(self), c_char_p(filename))
+        self = cls(bits=0)
+        ret = libsdm.as_init_from_b64_file(pointer(self), c_char_p(filename))
+        if ret != 0:
+            raise Exception('Unable to create AddressSpace. Error code: {}'.format(ret))
         return self
+
+    def get_bitstring(self, index):
+        bs = Bitstring(self.bits)
+        libsdm.bs_copy(bs.bs_data, self.addresses[index], c_uint(self.bs_len))
+        return bs
+
+    @property
+    def opencl_opts(self):
+        return self.c_opencl_opts.contents
 
     def print_summary(self):
         libsdm.as_print_summary(pointer(self))
+
+    def test_opencl_kernel(self, name):
+        raise NotImplemented
+
+    def set_opencl_kernel(self, name):
+        if name not in OPENCL_KERNEL_WORKSIZE:
+            raise Exception('Kernel not found.')
+
+        if isinstance(name, str):
+            self.opencl_kernel_name = name.encode()
+        else:
+            self.opencl_kernel_name = name
+
+        self.opencl_opts.kernel_name = c_char_p(self.opencl_kernel_name)
+
+        local_worksize, global_worksize = OPENCL_KERNEL_WORKSIZE[name](self)
+        self.set_opencl_worksize(local_worksize, global_worksize)
+
+    def set_opencl_worksize(self, local_worksize, global_worksize):
+        self.opencl_opts.local_worksize = c_size_t(local_worksize)
+        self.opencl_opts.global_worksize = c_size_t(global_worksize)
 
     def scan_linear(self, bs, radius):
         ''' Scan which hard-locations are in the circle with center `bs` and a given `radius`.
@@ -104,10 +205,22 @@ class AddressSpace(Structure):
         return [i for i, x in enumerate(buf) if x != '\x00']
 
     def opencl_init(self):
-        return libsdm.as_scanner_opencl_init(self.opencl_opts, pointer(self), c_char_p(opencl2_source_code))
+        return libsdm.as_scanner_opencl_init(self.c_opencl_opts, pointer(self), c_char_p(opencl2_source_code))
 
     def opencl_free(self):
-        return libsdm.as_scanner_opencl_free(self.opencl_opts)
+        return libsdm.as_scanner_opencl_free(self.c_opencl_opts)
+
+    def scan_linear2(self, bs, radius):
+        # See https://docs.python.org/3/library/ctypes.html#type-conversions
+        selected = (c_uint * (self.sample))()
+        cnt = libsdm.as_scan_linear2(pointer(self), bs.bs_data, c_uint(radius), selected)
+        return selected[:cnt]
+
+    def scan_thread2(self, bs, radius, thread_count=4):
+        # See https://docs.python.org/3/library/ctypes.html#type-conversions
+        selected = (c_uint * (self.sample))()
+        cnt = libsdm.as_scan_thread2(pointer(self), bs.bs_data, c_uint(radius), selected, thread_count)
+        return selected[:cnt]
 
     def scan_opencl2(self, bs, radius):
         ''' Scan which hard-locations are in the circle with center `bs` and a given `radius`.
@@ -119,7 +232,7 @@ class AddressSpace(Structure):
         '''
         # See https://docs.python.org/3/library/ctypes.html#type-conversions
         selected = (c_uint * (self.sample))()
-        cnt = libsdm.as_scan_opencl2(self.opencl_opts, bs.bs_data, c_uint(radius), selected)
+        cnt = libsdm.as_scan_opencl2(self.c_opencl_opts, bs.bs_data, c_uint(radius), selected)
         return selected[:cnt]
 
     def save(self, filename):
@@ -143,20 +256,32 @@ class Counter(Structure):
         ('data', POINTER(counter_t)),
     ]
 
+    def __del__(self):
+        libsdm.counter_free(pointer(self))
+
+    def __init__(self, *args, **kwargs):
+        super(Counter, self).__init__()
+        if kwargs.get('bits', None) != 0:
+            raise Exception('You must use one initializer.')
+
     @classmethod
     def init_zero(cls, bits, sample):
         ''' Initialize the counters with initial value zero. The counters are stored in RAM memory.
         '''
-        self = cls()
-        libsdm.counter_init(pointer(self), c_uint(bits), c_uint(sample))
+        self = cls(bits=0)
+        ret = libsdm.counter_init(pointer(self), c_uint(bits), c_uint(sample))
+        if ret != 0:
+            raise Exception('Unable to create Counter. Error code: {}'.format(ret))
         return self
 
     @classmethod
     def load_file(cls, filename):
         ''' Load the counters from a file. It is the suggested way to use counters.
         '''
-        self = cls()
-        libsdm.counter_init_file(c_char_p(filename), pointer(self))
+        self = cls(bits=0)
+        ret = libsdm.counter_init_file(c_char_p(filename), pointer(self))
+        if ret != 0:
+            raise Exception('Unable to create Counter. Error code: {}'.format(ret))
         return self
 
     @classmethod
@@ -164,7 +289,9 @@ class Counter(Structure):
         ''' Create a new file to store counters. You do not need to provide any file extension,
         because the counters are store in two files and the extensions will be automatically added.
         '''
-        libsdm.counter_create_file(c_char_p(filename), c_uint(bits), c_uint(sample))
+        ret = libsdm.counter_create_file(c_char_p(filename), c_uint(bits), c_uint(sample))
+        if ret != 0:
+            raise Exception('Unable to create Counter. Error code: {}'.format(ret))
         return cls.load_file(filename)
 
     def print_summary(self):
@@ -208,6 +335,9 @@ class Bitstring(object):
             self.bs_len += 1
         self.bs_remaining_bits = self.bs_len * 8 * sizeof(bitstring_t) - self.bits
         self.bs_data = libsdm.bs_alloc(c_uint(self.bs_len))
+
+    def __del__(self):
+        libsdm.bs_free(self.bs_data)
 
     @classmethod
     def init_hex(cls, bits, hex_str):
@@ -265,6 +395,9 @@ class Bitstring(object):
         bs.xor(other)
         return bs
 
+    def copy(self):
+        return Bitstring.init_from_bitstring(self)
+
     def get_bit(self, bit):
         ''' Return the value of a specific bit.
         '''
@@ -302,7 +435,7 @@ class Bitstring(object):
         return buf.value
 
     def to_binary(self):
-        return ''.join([str(self.get_bit(i)) for i in xrange(self.bits)])
+        return ''.join([str(self.get_bit(i)) for i in range(self.bits)])
 
     def distance_to(self, other):
         ''' Return the hamming distance to `other` bitstring.
@@ -438,7 +571,7 @@ class SDM(Structure):
     #    libsdm.sdm_write_sub(pointer(self), addr.bs_data, c_uint(radius), datum.bs_data)
 
     def write_random_bitstrings(self, n):
-        for _ in xrange(n):
+        for _ in range(n):
             bs = Bitstring.init_random(self.bits)
             self.write(bs, bs)
 

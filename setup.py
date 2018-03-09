@@ -37,7 +37,7 @@ libsdm_ext = Extension('sdm._libsdm', [
 ], libraries=libraries, define_macros=macros, extra_compile_args=extra_compile_args, extra_link_args=extra_link_args)
 
 setup(name='sdm',
-    version='1.4.0',
+    version='1.6.0',
     license='GPLv2',
     author='Marcelo Salhab Brogliato',
     author_email='msbrogli@vialink.com.br',
@@ -47,6 +47,9 @@ setup(name='sdm',
     packages=['sdm'],
     package_data={'sdm': ['scanner_opencl.cl', 'scanner_opencl2.cl']},
     url='https://github.com/msbrogli/sdm-framework',
+    install_requires=[
+        'future',
+    ],
     classifiers=[
         'Development Status :: 4 - Beta',
         'Intended Audience :: Developers',

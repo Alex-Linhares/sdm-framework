@@ -27,29 +27,7 @@ int as_scanner_opencl_init(struct opencl_scanner_s *this, struct address_space_s
 
 	this->address_space = as;
 	this->opencl_source = opencl_source;
-
-	/* =============================
-	 * Set local and group worksize.
-	 * =============================
-	 */
-	this->local_worksize = 0;
-
-	if (this->local_worksize == 0) {
-		this->global_worksize = this->address_space->sample;
-	} else {
-		this->global_worksize = this->address_space->sample/this->local_worksize;
-		if (this->address_space->sample%this->local_worksize > 0) {
-			this->global_worksize++;
-		}
-		this->global_worksize *= this->local_worksize;
-	}
-
-	/* Choose the right kernel. */
-	if (this->global_worksize >= this->address_space->sample) {
-		this->kernel_name = "single_scan";
-	} else {
-		this->kernel_name = "scan";
-	}
+	this->verbose = 0;
 
 	/* ==============
 	 * Create context.
@@ -81,17 +59,64 @@ int as_scanner_opencl_init(struct opencl_scanner_s *this, struct address_space_s
 	error = clGetContextInfo(this->context, CL_CONTEXT_DEVICES, deviceBufferSize, this->devices, NULL);
 	assert(error == CL_SUCCESS);
 	this->devices_count = deviceBufferSize / sizeof(cl_device_id);
-	printf("OpenCL platforms: %d devices: %d\n", numPlatforms, this->devices_count);
+	if (this->address_space->verbose) {
+		printf("OpenCL platforms: %d devices: %d\n", numPlatforms, this->devices_count);
+	}
 
 	/* =============
 	 * Create queue.
 	 * =============
 	 */
+	cl_uint max_compute_units;
 	this->queues = (cl_command_queue *) malloc(sizeof(cl_command_queue) * this->devices_count);
 	for (i=0; i<this->devices_count; i++) {
+		// TODO Handle multiple devices with different values.
+		clGetDeviceInfo(this->devices[i], CL_DEVICE_MAX_COMPUTE_UNITS, sizeof(max_compute_units), &max_compute_units, NULL);
+		this->max_compute_units = max_compute_units;
 		this->queues[i] = clCreateCommandQueue(this->context, this->devices[i], 0, &error);
 		assert(error == CL_SUCCESS);
 	}
+
+
+	/* =============================
+	 * Set local and group worksize.
+	 * =============================
+	 */
+	// Local worksize is a multiple of 16.
+	/*
+	this->local_worksize = this->address_space->bs_len / 16;
+	if (this->address_space->bs_len % 16 != 0) {
+		this->local_worksize++;
+	}
+	this->local_worksize *= 16;
+	*/
+
+	// Local worksize is a power-of-2.
+	this->local_worksize = 1;
+	while (this->local_worksize < this->address_space->bs_len) {
+		this->local_worksize <<= 1;
+	}
+	//this->global_worksize = 2 * 16 * this->local_worksize * this->max_compute_units;
+
+	{
+		// Each workgroup will calculate around 20 bitstring distances.
+		const size_t step = 2 * this->local_worksize * this->max_compute_units;
+		const size_t target = this->address_space->sample / 20;
+		this->global_worksize = target / step;
+		if (target % step != 0) {
+			this->global_worksize++;
+		}
+		this->global_worksize *= step;
+	}
+	this->kernel_name = "single_scan5_unroll";
+	//if (this->address_space->bs_len == 16) {
+	//	this->kernel_name = "single_scan3_16";
+	//}
+
+	if (this->address_space->verbose) {
+		printf("OpenCL Max compute units=%u Default kernel=%s Local worksize=%zu  Global worksize=%zu\n", this->max_compute_units, this->kernel_name, this->local_worksize, this->global_worksize);
+	}
+
 
 	/* =======================
 	 * Read and build program.
@@ -101,6 +126,9 @@ int as_scanner_opencl_init(struct opencl_scanner_s *this, struct address_space_s
 	char *source_str = (char *)malloc(sizeof(char)*MAX_SOURCE_SIZE);
 	size_t source_size;
 	FILE *fp = fopen(this->opencl_source, "r");
+	if (fp == NULL) {
+		printf("ERROR OpenCL source code not found (file=%s).\n", this->opencl_source);
+	}
 	assert(fp != NULL);
 	source_size = fread(source_str, 1, MAX_SOURCE_SIZE, fp);
 	source_str[source_size] = '\0';
@@ -116,7 +144,7 @@ int as_scanner_opencl_init(struct opencl_scanner_s *this, struct address_space_s
 	char *log = (char *) malloc(log_size);
 	clGetProgramBuildInfo(this->program, this->devices[0], CL_PROGRAM_BUILD_LOG, log_size, log, NULL);
 	if (strlen(log) > 0) {
-		printf("=== LOG\n%s\n=== END\n", log);
+		printf("=== LOG (%lu bytes)\n%s\n=== END\n", strlen(log), log);
 	}
 	free(log);
 
@@ -269,6 +297,9 @@ void opencl_scanner_devices(struct opencl_scanner_s *this) {
 }
 
 int as_scan_opencl(struct opencl_scanner_s *this, bitstring_t *bs, unsigned int radius, uint8_t *selected) {
+	// You must use as_scan_opencl2.
+	assert(0);
+
 	unsigned int i, cnt;
 	cl_int error;
 	//struct timeval t0, t1;
@@ -295,12 +326,7 @@ int as_scan_opencl(struct opencl_scanner_s *this, bitstring_t *bs, unsigned int 
 	error = clSetKernelArg(kernel, 3, sizeof(this->address_space->sample), &this->address_space->sample);
 	assert(error == CL_SUCCESS);
 
-	/* Set arg4: global_worksize */
-	//error = clSetKernelArg(kernel, 4, sizeof(this->global_worksize), &this->global_worksize);
-//printf("@@ error = %d\n", error);
-	//assert(error == CL_SUCCESS);
-
-	/* Set arg5: bs */
+	/* Set arg4: bs */
 	for(i=0; i<this->devices_count; i++) {
 		error = clEnqueueWriteBuffer(this->queues[i], this->bs_buf, CL_FALSE, 0, sizeof(cl_bitstring_t)*this->bs_len, bs, 0, NULL, NULL);
 		assert(error == CL_SUCCESS);
@@ -308,25 +334,18 @@ int as_scan_opencl(struct opencl_scanner_s *this, bitstring_t *bs, unsigned int 
 	error = clSetKernelArg(kernel, 4, sizeof(this->bs_buf), &this->bs_buf);
 	assert(error == CL_SUCCESS);
 
-	/* Set arg6: radius */
+	/* Set arg5: radius */
 	cl_uint arg_radius = radius;
 	error = clSetKernelArg(kernel, 5, sizeof(arg_radius), &arg_radius);
 	assert(error == CL_SUCCESS);
 
-	/* Set arg8: counter */
+	/* Set arg6: counter */
 	error = clSetKernelArg(kernel, 6, sizeof(this->counter_buf), &this->counter_buf);
 	assert(error == CL_SUCCESS);
 
-	/* Set arg8: selected */
+	/* Set arg7: selected */
 	error = clSetKernelArg(kernel, 7, sizeof(this->selected_buf), &this->selected_buf);
 	assert(error == CL_SUCCESS);
-
-	/* Wait until all queue is done. */
-	//error = clFinish(this->queue);
-	//assert(error == CL_SUCCESS);
-	//gettimeofday(&t1, NULL);
-	//printf("==> clEnqueueWriteBuffer %f ms\n", t1.tv_sec*1000.0 + t1.tv_usec/1000.0 - t0.tv_sec*1000.0 - t0.tv_usec/1000.0);
-	//gettimeofday(&t0, NULL);
 
 	/* Run kernel. */
 	size_t qty = this->global_worksize / this->devices_count;
