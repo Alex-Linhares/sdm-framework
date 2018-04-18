@@ -242,7 +242,7 @@ int counter_add_bitstring(struct counter_s *this, unsigned int index, bitstring_
 	return 0;
 }
 
-int counter_add_bitstring_weighted(struct counter_s *this, unsigned int index, bitstring_t *bs, int weight) {
+int counter_add_bitstring_weighted_RENAMED_RENAMED_RENAMED(struct counter_s *this, unsigned int index, bitstring_t *bs, int weight) {
 	unsigned int i;
 	counter_t *ptr = this->counter[index];
 	for(i=0; i<this->bits; i++) {
@@ -267,12 +267,21 @@ int counter_add_bitstring_weighted(struct counter_s *this, unsigned int index, b
 	return 0;
 }
 
-int counter_add_bitstring_weighted_xor_linhares(struct counter_s *this, unsigned int index, bitstring_t *bs, int weight) {
+
+
+
+
+int counter_add_bitstring_weighted(struct counter_s *this, unsigned int index, bitstring_t *bs, int weight) {
 	unsigned int i;
 	counter_t *ptr = this->counter[index];
+	counter_t address = this->data[index];
 	for(i=0; i<this->bits; i++) {
-		//need to create this function returning 1 iff bs_get_bit(bs,i) != bs_get_bit(,i)
-		if (bs_get_bit(bs,i) != bs_get_bit(?????,i)) {
+
+		//need to create this function returning 1 iff bs_get_bit(bs,i) != bs_get_bit(???,i) where ??? = address(hard-location)
+		if (bs_get_bit(bs,i) != bs_get_bit(address[i],i)) {
+
+
+
 	#ifdef COUNTER_CHECK_OVERFLOW
 			if (bs_get_bit(bs, i)) {
 				if (ptr[i] <= COUNTER_MAX - weight) {

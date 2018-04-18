@@ -29,8 +29,9 @@ void counter_reset(struct counter_s *this, unsigned int index);
 void counter_print(struct counter_s *this, unsigned int index);
 
 int counter_add_bitstring(struct counter_s *this, unsigned int index, bitstring_t *bs);
+int counter_add_bitstring_weighted_RENAMED_RENAMED_RENAMED(struct counter_s *this, unsigned int index, bitstring_t *bs, int weight);
 int counter_add_bitstring_weighted(struct counter_s *this, unsigned int index, bitstring_t *bs, int weight);
-int counter_add_bitstring_weighted_xor_linhares(struct counter_s *this, unsigned int index, bitstring_t *bs, int weight);
+//int counter_add_bitstring_weighted_xor_linhares(struct counter_s *this, unsigned int index, bitstring_t *bs, int weight);
 
 
 int counter_sub_bitstring(struct counter_s *this, unsigned int index, bitstring_t *bs);
