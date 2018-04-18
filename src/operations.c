@@ -298,7 +298,7 @@ int sdm_write2_weighted_table(struct sdm_s *sdm, bitstring_t *addr, unsigned int
 		counter_add_bitstring_weighted(sdm->counter, selected[i], datum, weight_table[dist]);
 	}
 	free(selected);
-	return cnt;
+	return cnt; 
 }
 
 int sdm_generic_read(struct sdm_s *sdm, bitstring_t *addr, unsigned int radius, bitstring_t *output, double z) {
