@@ -271,23 +271,26 @@ int counter_add_bitstring_weighted_xor_linhares(struct counter_s *this, unsigned
 	unsigned int i;
 	counter_t *ptr = this->counter[index];
 	for(i=0; i<this->bits; i++) {
-#ifdef COUNTER_CHECK_OVERFLOW
-		if (bs_get_bit(bs, i)) {
-			if (ptr[i] <= COUNTER_MAX - weight) {
-				ptr[i] += weight;
+		//need to create this function returning 1 iff bs_get_bit(bs,i) != bs_get_bit(,i)
+		if (bs_get_bit(bs,i) != bs_get_bit(?????,i)) {
+	#ifdef COUNTER_CHECK_OVERFLOW
+			if (bs_get_bit(bs, i)) {
+				if (ptr[i] <= COUNTER_MAX - weight) {
+					ptr[i] += weight;
+				}
+			} else {
+				if (ptr[i] >= COUNTER_MIN + weight) {
+					ptr[i] -= weight;
+				}
 			}
-		} else {
-			if (ptr[i] >= COUNTER_MIN + weight) {
+	#else
+			if (bs_get_bit(bs, i)) {
+				ptr[i] += weight;
+			} else {
 				ptr[i] -= weight;
 			}
+	#endif
 		}
-#else
-		if (bs_get_bit(bs, i)) {
-			ptr[i] += weight;
-		} else {
-			ptr[i] -= weight;
-		}
-#endif
 	}
 	return 0;
 }
