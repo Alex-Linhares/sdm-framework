@@ -221,6 +221,36 @@ int sdm_read2(struct sdm_s *sdm, bitstring_t *addr, unsigned int radius, bitstri
 	return cnt;
 }
 
+
+
+
+int sdm_read2_LINHARES_LINHARES_LINHARES_FAZENDO_M_AQUI(struct sdm_s *sdm, bitstring_t *addr, unsigned int radius, bitstring_t *output) {
+	struct counter_s counter;
+	unsigned int i;
+	int cnt;
+	unsigned int *selected = (unsigned int *) malloc(sizeof(unsigned int) * sdm->sample);
+	assert(selected != NULL);
+
+	cnt = sdm_scan2(sdm, addr, radius, selected);
+	if (cnt == -1) {
+		free(selected);
+		return -1;
+	}
+
+	counter_init(&counter, sdm->bits, 1);
+	for(i=0; i<(unsigned int)cnt; i++) {
+		counter_add_counter(&counter, 0, sdm->counter, selected[i]);
+	}
+	counter_to_bitstring(&counter, 0, output);
+	counter_free(&counter);
+
+	free(selected);
+	return cnt;
+}
+
+
+
+
 int sdm_write(struct sdm_s *sdm, bitstring_t *addr, unsigned int radius, bitstring_t *datum) {
 	unsigned int i, cnt = 0;
 	uint8_t *selected = (uint8_t *) malloc(sizeof(uint8_t) * sdm->sample);
@@ -298,7 +328,30 @@ int sdm_write2_weighted_table(struct sdm_s *sdm, bitstring_t *addr, unsigned int
 		counter_add_bitstring_weighted(sdm->counter, selected[i], datum, weight_table[dist]);
 	}
 	free(selected);
-	return cnt; 
+	return cnt;
+}
+
+int sdm_write2_weighted_table_xor(struct sdm_s *sdm, bitstring_t *addr, unsigned int radius, bitstring_t *datum, int *weight_table) {
+	unsigned int i;
+	int cnt;
+	unsigned int dist;
+	unsigned int *selected = (unsigned int *) malloc(sizeof(unsigned int) * sdm->sample);
+	assert(selected != NULL);
+
+	cnt = sdm_scan2(sdm, addr, radius, selected);
+	if (cnt == -1) {
+		free(selected);
+		return -1;
+	}
+
+	for(i=0; i<(unsigned int)cnt; i++) {
+		// TODO Should we change the scanners to store the distance instead of just a flag?
+		// AL: I think it would be nice to have both versions
+		dist = bs_distance(addr, sdm->address_space->addresses[selected[i]], sdm->address_space->bs_len);
+		counter_add_bitstring_weighted(sdm->counter, selected[i], datum, weight_table[dist]);
+	}
+	free(selected);
+	return cnt;
 }
 
 int sdm_generic_read(struct sdm_s *sdm, bitstring_t *addr, unsigned int radius, bitstring_t *output, double z) {
